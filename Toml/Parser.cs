@@ -191,7 +191,7 @@ namespace Toml
             {
                 if (this.CurrentGroup == null)
                 {
-                    throw new InvalidOperationException("A Group must be defined before values can be added");
+                    this.CurrentGroup = this.Document;
                 }
 
                 this.CurrentGroup.AddValue(name, value);
@@ -218,11 +218,18 @@ namespace Toml
                 }
             }
 
+            /// <summary>
+            /// Increases the current ArrayDepth by 1.
+            /// </summary>
             public void EnterArray()
             {
                 ++this.ArrayDepth;
             }
 
+            /// <summary>
+            /// Decreases the current ArrayDepth by 1.
+            /// </summary>
+            /// <returns></returns>
             public bool LeaveArray()
             {
                 if (this.ArrayDepth <= 0)
@@ -254,7 +261,7 @@ namespace Toml
                     ++lineNumber;
 
                     line = reader.ReadLine();
-                    ParseLine(state, line);
+                    ParseLine(state, line, lineNumber);
                 }
             }
 
@@ -271,7 +278,7 @@ namespace Toml
         /// </summary>
         /// <param name="state">The object used to store the parser's state.</param>
         /// <param name="line">The line being parsed.</param>
-        private static void ParseLine(Parser.State state, string line)
+        private static void ParseLine(Parser.State state, string line, int lineNumber)
         {
             // remove the whitespace
             line = line.Trim();
@@ -283,12 +290,12 @@ namespace Toml
 
             if ((state.CurrentMode == State.Mode.ReceivingGroupKey) || (state.CurrentMode == State.Mode.ReceivingValueKey))
             {
-                throw new InvalidOperationException("Name cannot span multiple lines");
+                throw new ParserException(lineNumber, "Name cannot span multiple lines");
             }
 
             if (state.IsInQuotes)
             {
-                throw new InvalidOperationException("Newline in constant string expression");
+                throw new ParserException(lineNumber, "Newline in constant string expression");
             }
 
             if (state.CurrentMode == State.Mode.None)
@@ -301,7 +308,7 @@ namespace Toml
                         state.LastToken = Toml.Parser.ReservedTokens.AppendToString;
                         line = line.Substring(1);
 
-                        ParseLine(state, line);
+                        ParseLine(state, line, lineNumber);
                         return;
                     }
 
@@ -318,7 +325,7 @@ namespace Toml
                 {
                     if (!line.StartsWith(Toml.Parser.ReservedTokens.Quote))
                     {
-                        throw new InvalidOperationException("Expected continuation of previous line's string value");
+                        throw new ParserException(lineNumber, "Expected continuation of previous line's string value");
                     }
 
                     state.CurrentMode = State.Mode.ReceivingValue;
@@ -335,7 +342,7 @@ namespace Toml
                         int endKeyName = line.IndexOf(Toml.Parser.ReservedTokens.EndKey);
                         if (endKeyName <= 1)
                         {
-                            throw new InvalidOperationException("KeyName cannot be Empty, and cannot span multiple lines");
+                            throw new ParserException(lineNumber, "KeyName cannot be Empty, and cannot span multiple lines");
                         }
 
                         string keyName = line.Substring(1, endKeyName - 1);
@@ -351,7 +358,7 @@ namespace Toml
                         lineRemaining = lineRemaining.Trim();
 
                         state.CurrentMode = State.Mode.None;
-                        ParseLine(state, lineRemaining);
+                        ParseLine(state, lineRemaining, lineNumber);
                         return;
                     }
                 }
@@ -364,7 +371,7 @@ namespace Toml
                     string valueName = line.Substring(0, valueNameEnd).Trim();
                     if (string.IsNullOrWhiteSpace(valueName))
                     {
-                        throw new InvalidOperationException("Empty ValueName");
+                        throw new ParserException(lineNumber, "Empty value name");
                     }
 
                     state.CurrentValueKey = valueName.Trim();
@@ -381,7 +388,7 @@ namespace Toml
                     lineRemaining = lineRemaining.Trim();
 
                     state.CurrentMode = State.Mode.ReceivingValue;
-                    ParseLine(state, lineRemaining);
+                    ParseLine(state, lineRemaining, lineNumber);
                     return;
                 }
             }
@@ -419,7 +426,7 @@ namespace Toml
                             }
 
                             line = line.Substring(linePos + 1).Trim();
-                            ParseLine(state, line);
+                            ParseLine(state, line, lineNumber);
                             return;
                         }
 
@@ -443,7 +450,7 @@ namespace Toml
                 {
                     if (!state.IsInQuotes)
                     {
-                        throw new InvalidOperationException("Escape Char outside of String");
+                        throw new ParserException(lineNumber, "Escape character found outside of a string");
                     }
 
                     state.IsEscaping = true;
@@ -471,7 +478,7 @@ namespace Toml
                 if (lineChar == Toml.Parser.ReservedTokens.Equals[0])
                 {
                     // we're already receiving a value - this is illegal
-                    throw new InvalidOperationException("Unexpected token found");
+                    throw new ParserException(lineNumber, "Unexpected token found");
                 }
 
                 if (state.IsInArray)
@@ -485,7 +492,15 @@ namespace Toml
                     }
                     else if (lineChar == Toml.Parser.ReservedTokens.EndArray[0])
                     {
-                        state.LeaveArray();
+                        try
+                        {
+                            state.LeaveArray();
+                        }
+                        catch (Exception)
+                        {
+                            throw new ParserException(lineNumber, "Unexpected array terminator");
+                        }
+
                         if (!state.IsInArray)
                         {
                             state.CurrentGroup.AddValue(state.CurrentValueKey, state.CurrentValue);
@@ -494,7 +509,7 @@ namespace Toml
 
                             state.CurrentMode = State.Mode.None;
                             line = line.Substring(linePos + 1);
-                            ParseLine(state, line);
+                            ParseLine(state, line, lineNumber);
                             return;
                         }
 

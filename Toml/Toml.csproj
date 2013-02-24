@@ -42,6 +42,7 @@
     <Compile Include="Document.cs" />
     <Compile Include="Group.cs" />
     <Compile Include="Parser.cs" />
+    <Compile Include="ParserException.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
