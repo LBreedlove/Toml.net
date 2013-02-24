@@ -7,9 +7,12 @@ using System.Threading.Tasks;
 
 namespace Toml
 {
-    public static class Parser
+    internal static class Parser
     {
-        public class ReservedTokens
+        /// <summary>
+        /// Contains the tokens used by the parser
+        /// </summary>
+        internal class ReservedTokens
         {
             public static readonly string Comment    = "#";
             public static readonly string Equals     = "=";
@@ -58,8 +61,16 @@ namespace Toml
             }
         }
 
-        public class EscapedChars
+        /// <summary>
+        /// Contains the values of the escaped chars.
+        /// </summary>
+        internal class EscapedChars
         {
+            /// <summary>
+            /// Converts an escaped character to its string format.
+            /// </summary>
+            /// <param name="escapedChar">The escaped char.</param>
+            /// <returns>A string representing the escaped character.</returns>
             public static string GetEscapedCharValue(char escapedChar)
             {
                 switch (escapedChar)
@@ -94,6 +105,9 @@ namespace Toml
             public const char Quote = '\"';
         }
 
+        /// <summary>
+        /// Represents the parser's current state.
+        /// </summary>
         private class State
         {
             public enum Mode
@@ -107,9 +121,9 @@ namespace Toml
             /// <summary>
             /// Initializes a new instance of the Parser.State class.
             /// </summary>
-            public State()
+            public State(Document document)
             {
-                this.Document = Document.Create();
+                this.Document = document;
                 this.CurrentMode = Mode.None;
                 this.CurrentGroup = this.Document;
             }
@@ -224,11 +238,12 @@ namespace Toml
         /// <summary>
         /// Attempts to parse the specified Stream into a Toml.Document.
         /// </summary>
+        /// <param name="document">The document to parse the stream into.</param>
         /// <param name="stream">The stream to parse.</param>
-        /// <returns>A new Toml.Document generated from the specified stream.</returns>
-        public static Document Parse(Stream stream)
+        public static void Parse(Document document, Stream stream)
         {
-            Parser.State state = new State();
+            Parser.State state = new State(document);
+
             int lineNumber = 0;
             string line = string.Empty;
 
@@ -248,7 +263,7 @@ namespace Toml
                 state.CurrentGroup.AddValue(state.CurrentValueKey, state.CurrentValue);
             }
 
-            return state.Document;
+            return;
         }
 
         /// <summary>

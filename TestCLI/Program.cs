@@ -11,13 +11,10 @@ namespace TestCLI
     {
         static void Main(string[] args)
         {
-            using (var testFile = new FileStream("TestData.toml", FileMode.Open, FileAccess.Read, FileShare.Read))
-            {
-                var doc = Toml.Parser.Parse(testFile);
-                Console.WriteLine(doc.ToString());
+            var doc = Toml.Document.Create("TestData.toml");
+            Console.WriteLine(doc.ToString());
 
-                var value = doc.GetValue("servers.alpha.dc");
-            }
+            var value = doc.GetValue("servers.alpha.dc");
         }
     }
 }
