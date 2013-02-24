@@ -147,6 +147,10 @@ namespace Toml
 
         #region Public Methods
 
+        /// <summary>
+        /// Creates a string representing the values and subgroups in the Group.
+        /// </summary>
+        /// <returns>A string representing the Group's contents.</returns>
         public override string ToString()
         {
             string value = string.Empty;
@@ -168,6 +172,7 @@ namespace Toml
 
             return value;
         }
+
         /// <summary>
         /// Attempts to retrieve the group with the specified key.
         /// </summary>
@@ -257,9 +262,17 @@ namespace Toml
         /// Attempts to add the specified item under this Item.
         /// </summary>
         /// <param name="group">The child item to add.</param>
-        internal void AddValue(string key, string value)
+        public void AddValue(string key, string value)
         {
-            _items.Add(key, value);
+            IEnumerable<string> keyParts = key.Split(Group.Separators, StringSplitOptions.None);
+            if (keyParts.Count() == 1)
+            {
+                _items.Add(key, value);
+                return;
+            }
+
+            Group group = CreateGroup(keyParts);
+            group.AddValue(keyParts.Last(), value);
         }
 
         /// <summary>
@@ -268,7 +281,7 @@ namespace Toml
         /// <typeparam name="T">The type of the new child to add.</typeparam>
         /// <param name="key">The key of the new item.</param>
         /// <param name="value">The value of the new key to add.</param>
-        internal void AddValue<T>(string key, T value)
+        public void AddValue<T>(string key, T value)
         {
             if (string.IsNullOrEmpty(key))
             {
@@ -280,7 +293,7 @@ namespace Toml
                 throw new ArgumentNullException("value", "Value cannot be null");
             }
 
-            _items.Add(key, value.ToString());
+            AddValue(key, value.ToString());
             return;
         }
 

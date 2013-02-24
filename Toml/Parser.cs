@@ -399,6 +399,12 @@ namespace Toml
 
             foreach (var lineChar in line)
             {
+                if ((lineChar == Toml.Parser.ReservedTokens.Comment[0]) && (!state.IsInQuotes) && (!state.IsEscaping))
+                {
+                    // skip the rest of the line
+                    return;
+                }
+
                 if (lineChar == Toml.Parser.ReservedTokens.Quote[0])
                 {
                     if (state.IsInQuotes)

@@ -1,5 +1,11 @@
 ﻿# This is a TOML document. Boom.
 
+aNewArray = [
+  1,
+  2, # this is ok
+  3
+]
+
 title = "TOML Example"
 
 [clients]
