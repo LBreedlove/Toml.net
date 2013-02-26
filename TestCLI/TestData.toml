@@ -1,4 +1,9 @@
 ﻿# This is a TOML document. Boom.
+multi_line_test = "this is the first line" +
+                  " in a multi-line"
+				+ "value"
+
+base_path = ".\\root\\documents\\2013\\test\"\\"
 
 aNewArray = [
   1,

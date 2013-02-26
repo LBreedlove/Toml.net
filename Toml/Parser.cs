@@ -329,7 +329,7 @@ namespace Toml
                     }
 
                     state.CurrentMode = State.Mode.ReceivingValue;
-                    state.LastToken = Toml.Parser.ReservedTokens.Quote;
+                    state.LastToken = null;
                 }
 
                 if (state.CurrentMode != State.Mode.ReceivingValue)
@@ -361,35 +361,35 @@ namespace Toml
                         ParseLine(state, lineRemaining, lineNumber);
                         return;
                     }
-                }
 
-                // read up to the equal sign
-                int valueNameEnd = line.IndexOf(Toml.Parser.ReservedTokens.Equals);
-                if (valueNameEnd > 0)
-                {
-                    state.CurrentMode = State.Mode.ReceivingValueKey;
-                    string valueName = line.Substring(0, valueNameEnd).Trim();
-                    if (string.IsNullOrWhiteSpace(valueName))
+                    // read up to the equal sign
+                    int valueNameEnd = line.IndexOf(Toml.Parser.ReservedTokens.Equals);
+                    if (valueNameEnd > 0)
                     {
-                        throw new ParserException(lineNumber, "Empty value name");
-                    }
+                        state.CurrentMode = State.Mode.ReceivingValueKey;
+                        string valueName = line.Substring(0, valueNameEnd).Trim();
+                        if (string.IsNullOrWhiteSpace(valueName))
+                        {
+                            throw new ParserException(lineNumber, "Empty value name");
+                        }
 
-                    state.CurrentValueKey = valueName.Trim();
-                    state.CurrentMode = State.Mode.ReceivingValue;
+                        state.CurrentValueKey = valueName.Trim();
+                        state.CurrentMode = State.Mode.ReceivingValue;
 
-                    if (line.Length <= valueNameEnd + 1)
-                    {
-                        state.CurrentMode = State.Mode.None;
-                        state.CompleteLine();
+                        if (line.Length <= valueNameEnd + 1)
+                        {
+                            state.CurrentMode = State.Mode.None;
+                            state.CompleteLine();
+                            return;
+                        }
+
+                        string lineRemaining = line.Substring(valueNameEnd + 1);
+                        lineRemaining = lineRemaining.Trim();
+
+                        state.CurrentMode = State.Mode.ReceivingValue;
+                        ParseLine(state, lineRemaining, lineNumber);
                         return;
                     }
-
-                    string lineRemaining = line.Substring(valueNameEnd + 1);
-                    lineRemaining = lineRemaining.Trim();
-
-                    state.CurrentMode = State.Mode.ReceivingValue;
-                    ParseLine(state, lineRemaining, lineNumber);
-                    return;
                 }
             }
 
@@ -405,7 +405,7 @@ namespace Toml
                     return;
                 }
 
-                if (lineChar == Toml.Parser.ReservedTokens.Quote[0])
+                if ((!state.IsEscaping) && (lineChar == Toml.Parser.ReservedTokens.Quote[0]))
                 {
                     if (state.IsInQuotes)
                     {
@@ -435,13 +435,6 @@ namespace Toml
                             ParseLine(state, line, lineNumber);
                             return;
                         }
-
-                        quotedValue = line.Substring(quoteStart, linePos - 2);
-                        state.CurrentValue += quotedValue;
-                        quoteStart = linePos;
-
-                        ++linePos;
-                        continue;
                     }
                     else
                     {
@@ -459,10 +452,23 @@ namespace Toml
                         throw new ParserException(lineNumber, "Escape character found outside of a string");
                     }
 
-                    state.IsEscaping = true;
-                    state.CurrentValue += line.Substring(quoteStart, linePos - 1);
-                    ++linePos;
-                    continue;
+                    if (!state.IsEscaping)
+                    {
+                        state.IsEscaping = true;
+                        state.CurrentValue += line.Substring(quoteStart, linePos - quoteStart);
+                        ++linePos;
+                        continue;
+                    }
+                    else
+                    {
+                        // process escape chars
+                        state.CurrentValue += Toml.Parser.EscapedChars.GetEscapedCharValue(lineChar);
+                        state.IsEscaping = false;
+
+                        quoteStart = linePos + 1;
+                        ++linePos;
+                        continue;
+                    }
                 }
                 else if (state.IsEscaping)
                 {
