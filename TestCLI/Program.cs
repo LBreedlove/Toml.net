@@ -15,6 +15,11 @@ namespace TestCLI
             Console.WriteLine(doc.ToString());
 
             var value = doc.GetValue("servers.alpha.dc");
+
+            int conMax = doc.GetFieldValue<int>("database.connection_max");
+
+            string bio = doc.GetFieldValue<string>("owner.bio");
+            Console.WriteLine("bio: {0}", bio);
         }
     }
 }

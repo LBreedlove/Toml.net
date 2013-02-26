@@ -304,7 +304,20 @@ namespace Toml
         /// <returns>true if the Item is found, otherwise false.</returns>
         public bool TryGetValue(string key, out string result)
         {
-            return _items.TryGetValue(key, out result);
+            var keyParts = key.Split(Group.Separators, StringSplitOptions.None);
+            if (keyParts.Count() == 1)
+            {
+                return _items.TryGetValue(keyParts.Last(), out result);
+            }
+
+            Group group = null;
+            if (this.TryGetGroup(keyParts.Take(keyParts.Count() - 1), out group))
+            {
+                return group.TryGetValue(keyParts.Last(), out result);
+            }
+
+            result = null;
+            return false;
         }
 
         /// <summary>

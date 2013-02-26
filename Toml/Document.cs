@@ -48,5 +48,41 @@ namespace Toml
             : base(string.Empty)
         {
         }
+
+        /// <summary>
+        /// Attempts to find the field with the specified 
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="name"></param>
+        /// <returns>true if the named value can be found and parsed as the requested type, otherwise false.</returns>
+        public bool TryGetFieldValue<T>(string name, out T result)
+        {
+            result = default(T);
+
+            string value = null;
+            if (TryGetValue(name, out value))
+            {
+                return TypeParsers.TryParse(value, out result);
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Attempts to find the field with the specified 
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="name"></param>
+        /// <returns></returns>
+        public T GetFieldValue<T>(string name)
+        {
+            string value = null;
+            if (TryGetValue(name, out value))
+            {
+                return TypeParsers.Parse<T>(value);
+            }
+
+            throw new KeyNotFoundException("Specified value was not found");
+        }        
     }
 }
