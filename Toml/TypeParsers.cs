@@ -243,11 +243,20 @@ namespace Toml
         {
             result = default(T);
 
-            var parseResult = (ParseResult<T>)TypeParsers.ParserFuncs[typeof(T)](value);
-            if (parseResult.Success)
+            Func<string, ParseResultBase> parser = null;
+            if (!TypeParsers.ParserFuncs.TryGetValue(typeof(T), out parser))
             {
-                result = parseResult.Value;
-                return true;
+                return false;
+            }
+
+            var parseResult = parser(value);
+            if (parseResult is ParseResult<T>)
+            {
+                if (parseResult.Success)
+                {
+                    result = ((ParseResult<T>)parseResult).Value;
+                    return true;
+                }
             }
 
             return false;

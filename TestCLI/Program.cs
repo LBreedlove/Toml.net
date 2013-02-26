@@ -20,6 +20,11 @@ namespace TestCLI
 
             string bio = doc.GetFieldValue<string>("owner.bio");
             Console.WriteLine("bio: {0}", bio);
+
+            // this type isn't supported, but the TryGetFieldValue shouldn't throw.
+            Guid guidResult;
+            bool success = doc.TryGetFieldValue<Guid>("owner.bio", out guidResult);
+            System.Diagnostics.Debug.Assert(!success);
         }
     }
 }
