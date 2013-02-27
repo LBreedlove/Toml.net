@@ -7,6 +7,7 @@ Needs some cleanup and a refactor or three.
 
 TODO:
  - Add tests
+ - Add Get methods to properly handle arrays - currently just returns the array string.
  - Toml.Document.ToJson
  - Toml.Document.FromJson
  - void Document.Serialize<T>(T value)
