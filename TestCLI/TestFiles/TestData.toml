@@ -1,0 +1,56 @@
+﻿dob = 1979-05-27T07:32:00Z # First class dates? Why not?
+# This is a TOML document. Boom.
+simple_line_test = "this is the first line"
+multi_line_test = 
+"""
+this is the first of 3
+this is the 2nd of 3
+this is the final line
+"""
+
+base_path = ".\\root\\documents\\2013\\test\"\\"
+
+aNewArray = [
+  1,
+  2, # this is ok
+  3
+]
+
+title = "TOML Example"
+
+[clients]
+data = [ ["gamma", "delta"], [1, 2] ] # just an update to make sure parsers support it
+
+[owner]
+name = "Tom Preston-Werner"
+organization = "GitHub"
+bio = "GitHub Cofounder & CEO\nLikes tater tots and beer."
+dob = 1979-05-27T07:32:00Z # First class dates? Why not?
+
+[database]
+server = "192.168.1.1"
+ports = [ 8001, 8001, 8002 ]
+connection_max = 5000
+enabled = true
+
+port_ips = [
+	[8001, 8002, 8003],
+	["192.168.1.1", "192.168.1.2", "192.168.1.3" ] 
+]
+
+[servers]
+
+  # You can indent as you please. Tabs or spaces. TOML don't care.
+  [servers.alpha]
+  ip = "10.0.0.1"
+  dc = "eqdc10"
+
+  [servers.beta]
+  ip = "10.0.0.2"
+  dc = "eqdc10"
+
+[servers.clients]
+data = [ ["gamma", "delta"], [1, 2] ] # just an update to make sure parsers support it
+
+[root.missingKey.finalKey]
+value2 = 2013

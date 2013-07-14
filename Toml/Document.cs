@@ -19,13 +19,13 @@ namespace Toml
         /// <returns>A new Document representing the contents of the file.</returns>
         public static Document Create(string filename)
         {
-            Document document = new Document();
-            using (FileStream stream = new FileStream(filename, FileMode.Open, FileAccess.Read, FileShare.Read))
+            var doc = new Document();
+            foreach (var entry in Parser.Parse(filename))
             {
-                Parser.Parse(document, stream);
+                doc.AddValue(entry);
             }
 
-            return document;
+            return doc;
         }
 
         /// <summary>
@@ -35,22 +35,25 @@ namespace Toml
         /// <returns>A new Document representing the contents of the stream.</returns>
         public static Document Create(Stream stream)
         {
-            Document document = new Document();
-            Parser.Parse(document, stream);
+            var doc = new Document();
+            foreach (var entry in Parser.Parse(stream))
+            {
+                doc.AddValue(entry);
+            }
 
-            return document;
+            return doc;
         }
 
         /// <summary>
         /// Initializes a new instance of the Document class.
         /// </summary>
-        private Document()
+        internal Document()
             : base(string.Empty)
         {
         }
 
         /// <summary>
-        /// Attempts to find the field with the specified 
+        /// Attempts to find the field with the specified name.
         /// </summary>
         /// <typeparam name="T"></typeparam>
         /// <param name="name"></param>
@@ -83,6 +86,41 @@ namespace Toml
             }
 
             throw new KeyNotFoundException("Specified value was not found");
-        }        
+        }
+
+        /// <summary>
+        /// Attempts to get the array field with the specified name.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="name"></param>
+        /// <returns></returns>
+        public T[] GetArrayValue<T>(string name)
+        {
+            Entry entry = this.GetValue(name);
+            if (entry.ParsedType != Entry.TomlType.Array)
+            {
+                throw new InvalidOperationException("Specified value is not an array");
+            }
+
+            // TODO: MAKE MULTI-DIMENSION ARRAYS WORK.
+            var arrayEntry = (Toml.Array)entry;
+            //if (typeof(T).IsArray)
+            //{
+            //    return GetArrayValue(typeof(T).GetElementType(), name);
+            //}
+
+            //if (typeof(T).Equals(typeof(object)))
+            //{
+            //    return arrayEntry.Children
+            //                     .Select(c => c.SourceText)
+            //                     .Select(val => TypeParsers.Parse(arrayEntry.GetArrayType(), val))
+            //                     .ToArray();
+            //}
+
+            return arrayEntry.Children
+                             .Select(c => c.SourceText)
+                             .Select(val => TypeParsers.Parse<T>(val))
+                             .ToArray();
+        }
     }
 }

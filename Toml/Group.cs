@@ -32,7 +32,7 @@ namespace Toml
         /// <summary>
         /// The values of this group.
         /// </summary>
-        private Dictionary<string, string> _items = new Dictionary<string, string>();
+        private Dictionary<string, Entry> _items = new Dictionary<string, Entry>();
 
         #endregion
 
@@ -104,11 +104,22 @@ namespace Toml
         /// <summary>
         /// Gets the Items owned by the group.
         /// </summary>
-        public IEnumerable<KeyValuePair<string, string>> Items
+        public IEnumerable<KeyValuePair<string, Entry>> Items
         {
             get
             {
-                return _items.Select(entry => new KeyValuePair<string, string>(entry.Key, entry.Value));
+                return _items.Select(entry => new KeyValuePair<string, Entry>(entry.Key, entry.Value));
+            }
+        }
+
+        /// <summary>
+        /// Gets all the items in the tree, from this node down.
+        /// </summary>
+        public IEnumerable<KeyValuePair<string, Entry>> AllItems
+        {
+            get
+            {
+                return (this.Items).Concat(this._children.SelectMany((item) => item.Value.AllItems));
             }
         }
 
@@ -161,7 +172,7 @@ namespace Toml
 
             foreach (var item in this.Items)
             {
-                value += item.Key + "=" + item.Value + System.Environment.NewLine;
+                value += item.ToString() + System.Environment.NewLine;
             }
 
             foreach (var group in this.Children)
@@ -198,6 +209,23 @@ namespace Toml
         }
 
         /// <summary>
+        /// Attempts to retrieve the group with the specified key.
+        /// </summary>
+        /// <param name="key">The key of the group to search for.</param>
+        /// <param name="group">The located group.</param>
+        /// <returns></returns>
+        public Group GetGroup(IEnumerable<string> keyParts)
+        {
+            if (keyParts.Count() == 0)
+            {
+                return this;
+            }
+
+            Group child = _children[keyParts.First()];
+            return child.GetGroup(keyParts.Skip(1));
+        }
+
+        /// <summary>
         /// Attempts to create the group comprised of the specified key.
         /// </summary>
         public Group CreateGroup(string key)
@@ -219,12 +247,6 @@ namespace Toml
             }
 
             string firstKeyPart = keyParts.First();
-            if (keyParts.Count() == 1)
-            {
-                var newGroup = new Group(this, firstKeyPart);
-                _children.Add(keyParts.First(), newGroup);
-                return newGroup;
-            }
 
             Group child = null;
             if (!_children.TryGetValue(firstKeyPart, out child))
@@ -262,17 +284,39 @@ namespace Toml
         /// Attempts to add the specified item under this Item.
         /// </summary>
         /// <param name="group">The child item to add.</param>
-        public void AddValue(string key, string value)
+        public void AddValue(Entry entry)
         {
-            IEnumerable<string> keyParts = key.Split(Group.Separators, StringSplitOptions.None);
+            IEnumerable<string> keyParts = entry.FullName.Split(Group.Separators, StringSplitOptions.None);
             if (keyParts.Count() == 1)
             {
-                _items.Add(key, value);
+                _items.Add(keyParts.Last(), entry);
                 return;
             }
 
-            Group group = CreateGroup(keyParts);
-            group.AddValue(keyParts.Last(), value);
+            Group group = CreateGroup(keyParts.Take(keyParts.Count() - 1));
+            group.AddValueDirect(entry);
+        }
+
+        /// <summary>
+        /// Adds the value directly under this node.
+        /// </summary>
+        /// <param name="entry">The value to add.</param>
+        private void AddValueDirect(Entry entry)
+        {
+            var pathParts = entry.FullName.Split(Group.Separators, StringSplitOptions.None);
+            var parentPath = string.Concat(pathParts.Take(pathParts.Length - 1).Select(s => s + "."));
+            
+            // remove the extra "." at the end
+            parentPath = parentPath.TrimEnd('.');
+
+            // verify the parent path == our path
+            if (!parentPath.Equals(this.FullKey))
+            {
+                throw new InvalidOperationException("Cannot add a value to a group it doesn't belong to");
+            }
+
+            _items.Add(entry.Name, entry);
+            return;
         }
 
         /// <summary>
@@ -283,6 +327,12 @@ namespace Toml
         /// <param name="value">The value of the new key to add.</param>
         public void AddValue<T>(string key, T value)
         {
+            if (value is Entry)
+            {
+                AddValue(value as Entry);
+                return;
+            }
+
             if (string.IsNullOrEmpty(key))
             {
                 throw new ArgumentException("Key cannot be null or Empty", "Key");
@@ -293,7 +343,9 @@ namespace Toml
                 throw new ArgumentNullException("value", "Value cannot be null");
             }
 
-            AddValue(key, value.ToString());
+            var entry = Parser.ParseEntry(string.Format("{0} = {1}", key, value.ToString())).First();
+
+            AddValue(key, entry);
             return;
         }
 
@@ -307,7 +359,16 @@ namespace Toml
             var keyParts = key.Split(Group.Separators, StringSplitOptions.None);
             if (keyParts.Count() == 1)
             {
-                return _items.TryGetValue(keyParts.Last(), out result);
+                Entry entry = null;
+                bool found = _items.TryGetValue(keyParts.Last(), out entry);
+
+                result = null;
+                if (found)
+                {
+                    result = entry.SourceText;
+                }
+
+                return found;
             }
 
             Group group = null;
@@ -324,8 +385,8 @@ namespace Toml
         /// Attempts to find the child with the specified key.
         /// </summary>
         /// <param name="key">The key of the item to search for.</param>
-        /// <returns>The item, if it is found, otherwise null.</returns>
-        public string GetValue(string key)
+        /// <returns>The item Entry.</returns>
+        public Entry GetValue(string key)
         {
             var keyParts = key.Split(Group.Separators, StringSplitOptions.None);
             if (keyParts.Count() == 1)
@@ -333,13 +394,18 @@ namespace Toml
                 return _items[key];
             }
 
-            Group group = null;
-            if (this.TryGetGroup(keyParts.Take(keyParts.Count() - 1), out group))
-            {
-                return group.GetValue(keyParts.Last());
-            }
+            Group group = GetGroup(keyParts.Take(keyParts.Count() - 1));
+            return group.GetValue(keyParts.Last());
+        }
 
-            return null;
+        /// <summary>
+        /// Attempts to find the child with the specified key.
+        /// </summary>
+        /// <param name="key">The key of the item to search for.</param>
+        /// <returns>The item Entry text.</returns>
+        public string GetValueString(string key)
+        {
+            return GetValue(key).SourceText;
         }
 
         #endregion

@@ -39,7 +39,9 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Array.cs" />
     <Compile Include="Document.cs" />
+    <Compile Include="Entry.cs" />
     <Compile Include="Group.cs" />
     <Compile Include="Parser.cs" />
     <Compile Include="ParserException.cs" />

@@ -267,7 +267,36 @@ namespace Toml
         /// </summary>
         public static T Parse<T>(string value)
         {
-            return ((ParseResult<T>)TypeParsers.ParserFuncs[typeof(T)](value)).Value;
+            Func<string, ParseResultBase> parser = null;
+            if (TypeParsers.ParserFuncs.TryGetValue(typeof(T), out parser))
+            {
+                return ((ParseResult<T>)parser(value)).Value;
+            }
+
+            if (typeof(T) == typeof(object))
+            {
+                return (T)((object)value);
+            }
+
+            throw new InvalidOperationException("A parser for the specified type is not registered");
         }
+
+        // TODO: MAKE THIS WORK
+        //public static object Parse(Type type, string value)
+        //{
+        //    Func<string, ParseResultBase> parser = null;
+        //    if (TypeParsers.ParserFuncs.TryGetValue(type, out parser))
+        //    {
+        //        var parserResult = typeof(ParseResult<>).MakeGenericType(type);
+        //        return ((parserResult)parser(value)).Value;
+        //    }
+
+        //    if (typeof(T) == typeof(object))
+        //    {
+        //        return (T)((object)value);
+        //    }
+
+        //    throw new InvalidOperationException("A parser for the specified type is not registered");
+        //}
     }
 }

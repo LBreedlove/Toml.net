@@ -7,568 +7,1185 @@ using System.Threading.Tasks;
 
 namespace Toml
 {
-    internal static class Parser
+
+    /// <summary>
+    /// Class used to break the document up into Entry instances.
+    /// </summary>
+    internal class Parser
     {
-        /// <summary>
-        /// Contains the tokens used by the parser
-        /// </summary>
-        internal class ReservedTokens
+        public enum Mode
         {
-            public static readonly string Comment    = "#";
-            public static readonly string Equals     = "=";
+            Scanning = 0,
+            ReadingValueName,
+            SearchingForValueSeparator,
+            SearchingForArraySeparator,
+            ReadingArrayEnd,
+            SearchingForValue,
+            ReadingValue,
+            ReadingStringValue,
+            ReadingMultiLineStringValue
+        }
 
-            public static readonly string StartKey   = "[";
-            public static readonly string EndKey     = "]";
+        /// <summary>
+        /// The errors used when throwing parser exceptions
+        /// </summary>
+        public static class Errors
+        {
+            public static readonly string InvalidValue = "Invalid Value";
+            public static readonly string InvalidIdentifierCharacter = "Invalid Identifier Character";
+            public static readonly string InvalidEscapeCharacter = "Invalid Escape Character Detected";
+            public static readonly string IncompleteToken = "Incomplete token on close";
 
-            public static readonly string Separator  = ".";
+            public static readonly string UnexpectedArrayTerminator = "Unexpected Array Terminator";
+            public static readonly string UnexpectedNewLineInString = "Unexpected Newline in String Value";
+            public static readonly string UnexpectedNewLineInKeyName = "Unexpected Newline in KeyName";
+            public static readonly string UnexpectedCommentInValue = "Unexpected comment in value";
             
-            public static readonly string StartArray = "[";
-            public static readonly string EndArray   = "]";
+            public static readonly string KeyNameIsEmpty = "KeyName cannot be empty";
+            public static readonly string IdentifierNameIsEmpty = "Identifier name cannot be empty";
 
-            public static readonly string Quote = "\"";
-            public static readonly string AppendToString = "+";
-            public static readonly string Escape = "\\";
-
-            public static readonly string[] All = 
-            {
-                Comment,
-                Equals,
-                StartKey,
-                EndKey,
-                Separator,
-                StartArray,
-                EndArray
-            };
-
-            public static readonly string[] AllExceptSeparator = 
-            {
-                Comment,
-                Equals,
-                StartKey,
-                EndKey,
-                StartArray,
-                EndArray
-            };
-
-            /// <summary>
-            /// Indicates whether or not the specified token is reserved.
-            /// </summary>
-            /// <param name="token"></param>
-            /// <returns></returns>
-            public static bool IsReservedToken(string token)
-            {
-                return ReservedTokens.All.Any(t => t.Equals(token, StringComparison.OrdinalIgnoreCase));
-            }
+            public static readonly string ExpectingIdentifier = "Unexpected character - Expecting Identifier";
+            public static readonly string ExpectingAssignmentOperator = "Expected = before value";
+            public static readonly string ExpectingArraySeparator = "Expected , before value";
         }
 
         /// <summary>
-        /// Contains the values of the escaped chars.
+        /// The tokens that are used by the parser.
         /// </summary>
-        internal class EscapedChars
+        internal class Tokens
         {
-            /// <summary>
-            /// Converts an escaped character to its string format.
-            /// </summary>
-            /// <param name="escapedChar">The escaped char.</param>
-            /// <returns>A string representing the escaped character.</returns>
-            public static string GetEscapedCharValue(char escapedChar)
-            {
-                switch (escapedChar)
-                {
-                    case (Toml.Parser.EscapedChars.Newline):
-                        return "\n";
+            public static readonly string GroupSeparator = ".";
 
-                    case (Toml.Parser.EscapedChars.Return):
-                        return "\r";
-                    
-                    case (Toml.Parser.EscapedChars.Null):
-                        return "\0";
-                    
-                    case (Toml.Parser.EscapedChars.Tab):
-                        return "\t";
-                    
-                    case (Toml.Parser.EscapedChars.Backslash):
-                        return "\\";
+            public static readonly char Comment = '#';
+            public static readonly char Negative = '-';
+            public static readonly char Decimal = '.';
 
-                    case (Toml.Parser.EscapedChars.Quote):
-                        return "\"";
-                }
+            public static readonly char KeyStart = '[';
+            public static readonly char KeySeparator = '.';
+            public static readonly char KeyEnd = ']';
 
-                throw new InvalidOperationException("Invalid Escape Character");
-            }
+            public static readonly char ArrayStart = '[';
+            public static readonly char ArraySeparator = ',';
+            public static readonly char ArrayEnd = ']';
 
-            public const char Newline = 'n';
-            public const char Return = 'r';
-            public const char Tab = 't';
-            public const char Null = '0';
-            public const char Backslash = '\\';
-            public const char Quote = '\"';
+            public static readonly char ValueSeparator = '=';
+
+            public static readonly char EscapeChar = '\\';
+            public static readonly char QuoteStart = '\"';
+            public static readonly char QuoteEnd = '\"';
+
+            public static readonly char MultiLineQuoteStart = '\"';
+            public static readonly char MultiLineQuoteEnd = '\"';
+
+            public static readonly string MultiLineQuoteStartToken = "\"\"\"";
+            public static readonly string MultiLineQuoteEndToken = "\"\"\"";
+
+            public static readonly string EmptyStringToken = "\"\"";
         }
 
         /// <summary>
-        /// Represents the parser's current state.
+        /// The set of characters that are considered Whitespace.
+        /// </summary>
+        public static readonly char[] Whitespace =
+        {
+            ' ',
+            '\t',
+            '\r',
+            '\n'
+        };
+
+        /// <summary>
+        /// Class used to track the state of the parser, since the parser is static.
         /// </summary>
         private class State
         {
-            public enum Mode
+            #region Public Methods
+
+            /// <summary>
+            /// Creates a new Toml.Entry for the current value, in the current group.
+            /// </summary>
+            /// <param name="type"></param>
+            /// <returns></returns>
+            public Entry CreateEntry(Toml.Entry.TomlType type)
             {
-                None,
-                ReceivingGroupKey,
-                ReceivingValueKey,
-                ReceivingValue
+                if (type == Entry.TomlType.String)
+                {
+                    // get the escaped string value
+                    this.CurrentValue = Parser.GetEscapedString(this.CurrentValue);
+                }
+
+                if (type == Toml.Entry.TomlType.Array)
+                {
+                    Array array;
+                    if (this.CurrentArray != null)
+                    {
+                        array = new Array(this.CurrentArray, this.LineNumber, this.Position);
+                    }
+                    else
+                    {
+                        array = new Array(this.CurrentGroupName, this.CurrentValueName, this.LineNumber, this.Position);
+                    }
+
+                    this.CurrentArray = array;
+                    this.ArrayDepth++;
+
+                    this.CurrentValue = string.Empty;
+                    return array;
+                }
+
+                if (this.CurrentArray != null)
+                {
+                    var entry = new Entry(this.CurrentArray, this.CurrentGroupName, this.CurrentValue, this.LineNumber, this.Position, type);
+                    this.CurrentArray.AddEntry(entry);
+
+                    this.CurrentValue = string.Empty;
+                    return entry;
+                }
+                else
+                {
+                    var entry = new Entry(this.CurrentGroupName, this.CurrentValueName, this.CurrentValue, this.LineNumber, this.Position, type);
+                    this.CurrentValue = string.Empty;
+                    return entry;
+                }
             }
 
             /// <summary>
-            /// Initializes a new instance of the Parser.State class.
+            /// Closes the current array.
             /// </summary>
-            public State(Document document)
+            /// <returns></returns>
+            public Array CloseArray()
             {
-                this.Document = document;
-                this.CurrentMode = Mode.None;
-                this.CurrentGroup = this.Document;
+                if (this.ArrayDepth == 0)
+                {
+                    throw this.CreateError(Parser.Errors.UnexpectedArrayTerminator);
+                }
+
+                this.ArrayDepth--;
+                var closedArray = this.CurrentArray;
+                closedArray.UpdateSourceText();
+                this.CurrentArray = this.CurrentArray.Parent;
+                return (this.InArray ? null : closedArray);
+            }
+
+            public ParserException CreateError(int pos, string message)
+            {
+                return new ParserException(this.LineNumber, pos, this.CurrentLine, message);
+            }
+
+            public ParserException CreateError(string message)
+            {
+                return new ParserException(this.LineNumber, this.Position, this.CurrentLine, message);
+            }
+
+            #endregion
+
+            #region Properties
+
+            /// <summary>
+            /// Gets the current line being used by the parser.
+            /// </summary>
+            public string CurrentLine { get; set; }
+
+            /// <summary>
+            /// Indicates whether or not the parser needs a new line to continue.
+            /// </summary>
+            public bool NeedsNewLine
+            {
+                get
+                {
+                    if (String.IsNullOrEmpty(this.CurrentLine))
+                    {
+                        return true;
+                    }
+
+                    if (this.CurrentLine.Length <= this.Position)
+                    {
+                        return true;
+                    }
+
+                    return false;
+                }
             }
 
             /// <summary>
-            /// Gets the Mode the parser is currently in.
+            /// The number of the line currently being parsed.
             /// </summary>
-            public Mode CurrentMode { get; set; }
+            public int LineNumber { get; set; }
 
             /// <summary>
-            /// The Document being generated.
+            /// The current position in the line being parsed.
             /// </summary>
-            public Document Document { get; private set; }
+            public int Position { get; set; }
 
             /// <summary>
-            /// The current group items are being added to.
+            /// The number of arrays deep we currently are.
             /// </summary>
-            public Group CurrentGroup { get; set; }
+            public int ArrayDepth { get; private set; }
 
             /// <summary>
-            /// Gets the name of the current key being generated.
+            /// The array values are being added to, if any.
             /// </summary>
-            public string CurrentValueKey { get; set; }
+            public Array CurrentArray { get; private set; }
 
             /// <summary>
-            /// Gets the current value of the item being read.
+            /// Indicates whether or not we are currently parsing an array.
+            /// </summary>
+            public bool InArray { get { return this.ArrayDepth > 0; } }
+
+            /// <summary>
+            /// The name of the group tokens are currently being assigned to.
+            /// </summary>
+            public string CurrentGroupName { get; set; }
+
+            /// <summary>
+            /// The name of the value currently being parsed.
+            /// </summary>
+            public string CurrentValueName { get; set; }
+
+            /// <summary>
+            /// The value that has been parsed so far, for the current value.
             /// </summary>
             public string CurrentValue { get; set; }
 
             /// <summary>
-            /// The last token encountered by the parser.
+            /// Gets or sets a value indicating what the parser is currently
+            /// doing.
             /// </summary>
-            public string LastToken { get; set; }
+            public Mode Mode { get; set; }
 
-            /// <summary>
-            /// Indicates whether or not the Parser just encountered an escape char.
-            /// </summary>
-            public bool IsEscaping { get; set; }
+            #endregion
+        }
 
-            /// <summary>
-            /// Indicates whether or not the parser is currently parsing a quoted string.
-            /// </summary>
-            public bool IsInQuotes { get; set; }
+        /// <summary>
+        /// Indicates whether or not the specified character is a whitespace char.
+        /// </summary>
+        /// <param name="value">The character value to test.</param>
+        /// <returns></returns>
+        public static bool IsWhitespace(char value)
+        {
+            return Parser.Whitespace.Any(ws => ws == value);
+        }
 
-            /// <summary>
-            /// Gets the number of levels deep in an array the parser currently is.
-            /// </summary>
-            public int ArrayDepth { get; set; }
+        /// <summary>
+        /// Indicates whether or not the character is valid to start an identifier
+        /// </summary>
+        /// <param name="value">The character value to test.</param>
+        /// <returns>true if the character is a valid identifier start character, otherwise false.</returns>
+        public static bool IsValidIdentifierStartChar(char value)
+        {
+            return !((!char.IsLetter(value)) && (value != '_'));
+        }
 
-            /// <summary>
-            /// Indicates whether or not the parser is currently parsing an array.
-            /// </summary>
-            public bool IsInArray
+        /// <summary>
+        /// Indicates whether or not the character is valid to include in an identifier
+        /// </summary>
+        /// <param name="value">The character value to test.</param>
+        /// <returns>true if the character is a valid identifier character, otherwise false.</returns>
+        public static bool IsValidIdentifierChar(char value)
+        {
+            return !((!char.IsLetterOrDigit(value)) && (value != '_') && (value != '-'));            
+        }
+
+        /// <summary>
+        /// Gets the escaped value of the character.
+        /// </summary>
+        private static char GetEscapedCharacter(int pos, char value, State state)
+        {
+            switch (value)
             {
-                get
+                case ('0'):
+                    return '\0';
+                case ('n'):
+                    return '\n';
+                case ('r'):
+                    return '\r';
+                case ('t'):
+                    return '\t';
+                case ('\\'):
+                    return '\\';
+                case ('\"'):
+                    return '\"';
+            }
+
+            throw state.CreateError(pos, string.Format("{0}: {1}", Parser.Errors.InvalidEscapeCharacter, value));
+        }
+
+        /// <summary>
+        /// Gets the value of the string after processing any embedded escape characters.
+        /// </summary>
+        /// <param name="source">The string to get the value of.</param>
+        /// <returns>The escaped value of the string.</returns>
+        public static string GetEscapedString(string source)
+        {
+            // TODO: IMPLEMENT
+            return source;
+        }
+
+        /// <summary>
+        /// Parses the specified text as if it was encountered in a file.
+        /// </summary>
+        /// <param name="text">The text to parse.</param>
+        /// <returns></returns>
+        public static IEnumerable<Entry> ParseEntry(string text)
+        {
+            using (var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(text)))
+            {
+                using (StreamReader reader = new StreamReader(stream))
                 {
-                    return this.ArrayDepth > 0;
-                }
-            }
+                    State state = new State();
 
-            /// <summary>
-            /// Adds the specified value to the current group.
-            /// </summary>
-            public void AddValue(string name, string value)
-            {
-                if (this.CurrentGroup == null)
-                {
-                    this.CurrentGroup = this.Document;
-                }
+                    var entry = GetNextEntry(reader, state);
+                    while (entry != null)
+                    {
+                        yield return entry;
+                        entry = GetNextEntry(reader, state);
+                    }
 
-                this.CurrentGroup.AddValue(name, value);
-            }
-
-            /// <summary>
-            /// Adds the specified Group to the Document.
-            /// </summary>
-            public void AddGroup(string key)
-            {
-                this.CurrentGroup = this.Document.CreateGroup(key);
-            }
-
-            /// <summary>
-            /// Validates the parser is prepared to receive a new line. If the parser
-            /// is not prepared for a new line, an exception will be thrown.
-            /// If the parser is currently parsing a value, the current value will be saved.
-            /// </summary>
-            public void CompleteLine()
-            {
-                if (this.IsEscaping || this.IsInQuotes)
-                {
-                    throw new InvalidOperationException("The parser is not ready to receive a new line");
-                }
-            }
-
-            /// <summary>
-            /// Increases the current ArrayDepth by 1.
-            /// </summary>
-            public void EnterArray()
-            {
-                ++this.ArrayDepth;
-            }
-
-            /// <summary>
-            /// Decreases the current ArrayDepth by 1.
-            /// </summary>
-            /// <returns></returns>
-            public bool LeaveArray()
-            {
-                if (this.ArrayDepth <= 0)
-                {
-                    throw new InvalidOperationException("ArrayDepth");
+                    if (state.Mode != Mode.Scanning)
+                    {
+                        throw state.CreateError(Parser.Errors.IncompleteToken);
+                    }
                 }
 
-                this.ArrayDepth -= 1;
-                return this.IsInArray;
+                yield break;
             }
         }
 
         /// <summary>
-        /// Attempts to parse the specified Stream into a Toml.Document.
+        /// Parses the document from the named file, lazily.
         /// </summary>
-        /// <param name="document">The document to parse the stream into.</param>
-        /// <param name="stream">The stream to parse.</param>
-        public static void Parse(Document document, Stream stream)
+        public static IEnumerable<Entry> Parse(String source)
         {
-            Parser.State state = new State(document);
-
-            int lineNumber = 0;
-            string line = string.Empty;
-
-            using (var reader = new StreamReader(stream))
+            using (var stream = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
-                while (!reader.EndOfStream)
+                using (StreamReader reader = new StreamReader(stream))
                 {
-                    ++lineNumber;
+                    State state = new State();
 
-                    line = reader.ReadLine();
-                    ParseLine(state, line, lineNumber);
+                    var entry = GetNextEntry(reader, state);
+                    while (entry != null)
+                    {
+                        yield return entry;
+                        entry = GetNextEntry(reader, state);
+                    }
+
+                    if (state.Mode != Mode.Scanning)
+                    {
+                        throw state.CreateError(Parser.Errors.IncompleteToken);
+                    }
                 }
-            }
 
-            if (!string.IsNullOrEmpty(state.CurrentValueKey))
-            {
-                state.CurrentGroup.AddValue(state.CurrentValueKey, state.CurrentValue);
+                yield break;
             }
-
-            return;
         }
 
         /// <summary>
-        /// Parsers the specified line into the Document.
+        /// Parses the document from the Stream, lazily.
         /// </summary>
-        /// <param name="state">The object used to store the parser's state.</param>
-        /// <param name="line">The line being parsed.</param>
-        private static void ParseLine(Parser.State state, string line, int lineNumber)
+        public static IEnumerable<Entry> Parse(Stream stream)
         {
-            // remove the whitespace
-            line = line.Trim();
-
-            if ((string.IsNullOrEmpty(line)) || (line.StartsWith(Toml.Parser.ReservedTokens.Comment)))
+            using (StreamReader reader = new StreamReader(stream))
             {
-                return;
-            }
+                State state = new State();
 
-            if ((state.CurrentMode == State.Mode.ReceivingGroupKey) || (state.CurrentMode == State.Mode.ReceivingValueKey))
-            {
-                throw new ParserException(lineNumber, "Name cannot span multiple lines");
-            }
-
-            if (state.IsInQuotes)
-            {
-                throw new ParserException(lineNumber, "Newline in constant string expression");
-            }
-
-            if (state.CurrentMode == State.Mode.None)
-            {
-                if (state.LastToken == Toml.Parser.ReservedTokens.Quote)
+                var entry = GetNextEntry(reader, state);
+                while (entry != null)
                 {
-                    if (line.StartsWith(Toml.Parser.ReservedTokens.AppendToString))
-                    {
-                        // building on to the previous line's string value
-                        state.LastToken = Toml.Parser.ReservedTokens.AppendToString;
-                        line = line.Substring(1);
-
-                        ParseLine(state, line, lineNumber);
-                        return;
-                    }
-
-                    if ((state.CurrentValue != null) && (state.CurrentValueKey != null))
-                    {
-                        state.CurrentGroup.AddValue(state.CurrentValueKey, state.CurrentValue);
-                        state.CurrentValue = null;
-                        state.CurrentValueKey = null;
-                    }
-
-                    state.LastToken = null;
-                }
-                else if (state.LastToken == Toml.Parser.ReservedTokens.AppendToString)
-                {
-                    if (!line.StartsWith(Toml.Parser.ReservedTokens.Quote))
-                    {
-                        throw new ParserException(lineNumber, "Expected continuation of previous line's string value");
-                    }
-
-                    state.CurrentMode = State.Mode.ReceivingValue;
-                    state.LastToken = null;
+                    yield return entry;
+                    entry = GetNextEntry(reader, state);
                 }
 
-                if (state.CurrentMode != State.Mode.ReceivingValue)
+                if (state.Mode != Mode.Scanning)
                 {
-                    // we're looking for a key start, or a value name
-                    if (line.StartsWith(Toml.Parser.ReservedTokens.StartKey))
-                    {
-                        state.CurrentMode = State.Mode.ReceivingGroupKey;
-
-                        int endKeyName = line.IndexOf(Toml.Parser.ReservedTokens.EndKey);
-                        if (endKeyName <= 1)
-                        {
-                            throw new ParserException(lineNumber, "KeyName cannot be Empty, and cannot span multiple lines");
-                        }
-
-                        string keyName = line.Substring(1, endKeyName - 1);
-                        state.AddGroup(keyName);
-                        if (line.Length <= endKeyName + 1)
-                        {
-                            state.CurrentMode = State.Mode.None;
-                            state.CompleteLine();
-                            return;
-                        }
-
-                        string lineRemaining = line.Substring(endKeyName + 1);
-                        lineRemaining = lineRemaining.Trim();
-
-                        state.CurrentMode = State.Mode.None;
-                        ParseLine(state, lineRemaining, lineNumber);
-                        return;
-                    }
-
-                    // read up to the equal sign
-                    int valueNameEnd = line.IndexOf(Toml.Parser.ReservedTokens.Equals);
-                    if (valueNameEnd > 0)
-                    {
-                        state.CurrentMode = State.Mode.ReceivingValueKey;
-                        string valueName = line.Substring(0, valueNameEnd).Trim();
-                        if (string.IsNullOrWhiteSpace(valueName))
-                        {
-                            throw new ParserException(lineNumber, "Empty value name");
-                        }
-
-                        state.CurrentValueKey = valueName.Trim();
-                        state.CurrentMode = State.Mode.ReceivingValue;
-
-                        if (line.Length <= valueNameEnd + 1)
-                        {
-                            state.CurrentMode = State.Mode.None;
-                            state.CompleteLine();
-                            return;
-                        }
-
-                        string lineRemaining = line.Substring(valueNameEnd + 1);
-                        lineRemaining = lineRemaining.Trim();
-
-                        state.CurrentMode = State.Mode.ReceivingValue;
-                        ParseLine(state, lineRemaining, lineNumber);
-                        return;
-                    }
+                    throw state.CreateError(Parser.Errors.IncompleteToken);
                 }
             }
 
-            int linePos = 0;
-            int quoteStart = -1;
-            int arrayStart = -1;
+            yield break;
+        }
 
-            foreach (var lineChar in line)
+        /// <summary>
+        /// Reads the next Entry from the Stream.
+        /// </summary>
+        private static Entry GetNextEntry(StreamReader reader, State state)
+        {
+            Entry newEntry = null;
+            while ((newEntry == null) || (newEntry.Parent != null))
             {
-                if ((lineChar == Toml.Parser.ReservedTokens.Comment[0]) && (!state.IsInQuotes) && (!state.IsEscaping))
+                int lineLength = (state.CurrentLine == null) ? 0 : state.CurrentLine.Length;
+                if ((string.IsNullOrEmpty(state.CurrentLine)) || (state.Position >= lineLength))
                 {
-                    // skip the rest of the line
-                    return;
+                    if (reader.EndOfStream)
+                    {
+                        newEntry = CloseCurrentToken(state);
+                        return newEntry;
+                    }
+
+                    if (state.Mode == Mode.ReadingStringValue)
+                    {
+                        throw state.CreateError(Parser.Errors.UnexpectedNewLineInString);
+                    }
+
+                    newEntry = TryCloseCurrentToken(state);
+                    if (newEntry != null)
+                    {
+                        if (newEntry.Parent == null)
+                        {
+                            return newEntry;
+                        }
+                    }
+
+                    ++state.LineNumber;
+                    state.CurrentLine = reader.ReadLine();
+                    state.Position = 0;
                 }
 
-                if ((!state.IsEscaping) && (lineChar == Toml.Parser.ReservedTokens.Quote[0]))
+                if (state.Mode == Mode.ReadingStringValue)
                 {
-                    if (state.IsInQuotes)
+                    newEntry = ConsumeString(state);
+                }
+                else if (state.Mode == Mode.ReadingMultiLineStringValue)
+                {
+                    newEntry = ConsumeMultilineString(state);
+                }
+                else if (state.Mode == Mode.SearchingForValueSeparator)
+                {
+                    if (!state.NeedsNewLine)
                     {
-                        string quotedValue = null;
-                        if (!state.IsEscaping)
-                        {
-                            state.IsInQuotes = false;
-
-                            if (state.IsInArray)
-                            {
-                                quotedValue = line.Substring(quoteStart - 1, linePos - quoteStart + 2);
-                                state.CurrentValue += quotedValue;
-                            }
-                            else
-                            {
-                                quotedValue = line.Substring(quoteStart, linePos - quoteStart);
-                                state.CurrentValue += quotedValue;
-                            }
-
-                            state.LastToken = Toml.Parser.ReservedTokens.Quote;
-                            if (!state.IsInArray)
-                            {
-                                state.CurrentMode = State.Mode.None;
-                            }
-
-                            line = line.Substring(linePos + 1).Trim();
-                            ParseLine(state, line, lineNumber);
-                            return;
-                        }
+                        ConsumeValueSeparator(state);
+                    }
+                }
+                else if (state.Mode == Mode.ReadingValue)
+                {
+                    if (!state.NeedsNewLine)
+                    {
+                        newEntry = ConsumeValue(state);
+                    }
+                }
+                else if (state.Mode == Mode.ReadingArrayEnd)
+                {
+                    newEntry = ConsumeArrayEnd(state);
+                }
+                else if (state.InArray)
+                {
+                    if (state.Mode == Mode.SearchingForArraySeparator)
+                    {
+                        ConsumeWhitespaceAndComments(state);
+                        ConsumeArraySeparator(state);
+                    }
+                    else if (state.Mode == Mode.ReadingArrayEnd)
+                    {
+                        newEntry = ConsumeArrayEnd(state);
                     }
                     else
                     {
-                        state.IsInQuotes = true;
-                        quoteStart = linePos + 1;
-
-                        ++linePos;
-                        continue;
-                    }
-                }
-                else if (lineChar == Toml.Parser.ReservedTokens.Escape[0])
-                {
-                    if (!state.IsInQuotes)
-                    {
-                        throw new ParserException(lineNumber, "Escape character found outside of a string");
-                    }
-
-                    if (!state.IsEscaping)
-                    {
-                        state.IsEscaping = true;
-                        state.CurrentValue += line.Substring(quoteStart, linePos - quoteStart);
-                        ++linePos;
-                        continue;
-                    }
-                    else
-                    {
-                        // process escape chars
-                        state.CurrentValue += Toml.Parser.EscapedChars.GetEscapedCharValue(lineChar);
-                        state.IsEscaping = false;
-
-                        quoteStart = linePos + 1;
-                        ++linePos;
-                        continue;
-                    }
-                }
-                else if (state.IsEscaping)
-                {
-                    // process escape chars
-                    state.CurrentValue += Toml.Parser.EscapedChars.GetEscapedCharValue(lineChar);
-                    state.IsEscaping = false;
-                    
-                    quoteStart = linePos + 1;
-                    ++linePos;
-                    continue;
-                }
-
-                if (state.IsInQuotes)
-                {
-                    ++linePos;
-                    continue;
-                }
-
-                if (lineChar == Toml.Parser.ReservedTokens.Equals[0])
-                {
-                    // we're already receiving a value - this is illegal
-                    throw new ParserException(lineNumber, "Unexpected token found");
-                }
-
-                if (state.IsInArray)
-                {
-                    state.CurrentValue += lineChar;
-                    if (lineChar == Toml.Parser.ReservedTokens.StartArray[0])
-                    {
-                        state.EnterArray();
-                        ++linePos;
-                        continue;
-                    }
-                    else if (lineChar == Toml.Parser.ReservedTokens.EndArray[0])
-                    {
-                        try
+                        ConsumeValue(state);
+                        if (state.Mode != Mode.ReadingMultiLineStringValue)
                         {
-                            state.LeaveArray();
+                            state.Mode = Mode.SearchingForArraySeparator;
+                            ConsumeArraySeparator(state);
                         }
-                        catch (Exception)
-                        {
-                            throw new ParserException(lineNumber, "Unexpected array terminator");
-                        }
-
-                        if (!state.IsInArray)
-                        {
-                            state.CurrentGroup.AddValue(state.CurrentValueKey, state.CurrentValue);
-                            state.CurrentValue = null;
-                            state.CurrentValueKey = null;
-
-                            state.CurrentMode = State.Mode.None;
-                            line = line.Substring(linePos + 1);
-                            ParseLine(state, line, lineNumber);
-                            return;
-                        }
-
-                        ++linePos;
-                        continue;
                     }
-
-                    ++linePos;
-                    continue;
-                }
-                else if (lineChar == Toml.Parser.ReservedTokens.StartArray[0])
-                {
-                    arrayStart = linePos;
-                    state.CurrentValue = lineChar.ToString();
-
-                    state.EnterArray();
-                    ++linePos;
-                    continue;
-                }
-
-                if (lineChar == Toml.Parser.ReservedTokens.Comment[0])
-                {
-                    return;
-                }
-
-                // we have a value that's not in an array, and not in quotes
-                // just read to the end of the line, or to a comment, and that's the current value
-                string currentValue = line.Trim();
-                int commentStart = currentValue.IndexOf(Toml.Parser.ReservedTokens.Comment);
-                if (commentStart != -1)
-                {
-                    state.CurrentValue = currentValue.Substring(0, commentStart - 1);
                 }
                 else
                 {
-                    state.CurrentValue = currentValue;
+                    newEntry = Consume(state);
                 }
 
-                state.AddValue(state.CurrentValueKey, state.CurrentValue);
-                state.CurrentValueKey = null;
-                state.CurrentValue = null;
+            } // end - while (newEntry == null)
 
-                state.CurrentMode = State.Mode.None;
+            return newEntry;
+        }
+
+        /// <summary>
+        /// Attempts to close the current token. Throws a ParserException
+        /// if more data is required.
+        /// </summary>
+        /// <param name="state">The current parser state.</param>
+        /// <returns>The closed token Entry.</returns>
+        private static Entry CloseCurrentToken(State state)
+        {
+            // TODO: IMPLEMENT
+            return null;
+        }
+
+        /// <summary>
+        /// Attempts to close the current token. Does not throw if the Token is not closeable yet.
+        /// </summary>
+        /// <param name="state">The current parser state.</param>
+        /// <returns>The closed token Entry.</returns>
+        private static Entry TryCloseCurrentToken(State state)
+        {
+            // TODO: IMPLEMENT
+            return null;
+        }
+
+        /// <summary>
+        /// Finds and consumes the start of the next token.
+        /// </summary>
+        private static Entry Consume(State state)
+        {
+            // closes out the current token, if there is one.
+            var entry = CloseCurrentToken(state);
+            if (entry != null)
+            {
+                return entry;
+            }
+
+            // the 'none' state. We're looking for:
+            //  1) Comment
+            //  2) [
+            //  3) any identifier start
+            ConsumeWhitespaceAndComments(state);
+
+            for (int idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                char curChar = state.CurrentLine[idx];
+                if (curChar == Parser.Tokens.KeyStart)
+                {
+                    state.Position = idx + 1;
+                    ConsumeKeyName(state);
+                    break;
+                }
+                else if (curChar == Parser.Tokens.Comment)
+                {
+                    state.Position = idx + 1;
+                    ConsumeComment(state);
+                    break;
+                }
+                else
+                {
+                    if (IsValidIdentifierStartChar(curChar))
+                    {
+                        state.Position = idx;
+                        ConsumeValueName(state);
+                        return null;
+                    }
+                    else
+                    {
+                        throw state.CreateError(idx, Parser.Errors.InvalidIdentifierCharacter);
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Skips the whitespace in the current line, from the current position.
+        /// </summary>
+        private static void ConsumeWhitespace(State state)
+        {
+            int idx = state.Position;
+            for (idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                if (!Parser.IsWhitespace(state.CurrentLine[idx]))
+                {
+                    state.Position = idx;
+                    return;
+                }
+            }
+
+            state.Position = idx;
+            return;
+        }
+
+        /// <summary>
+        /// Consumes a comment to the end of the line.
+        /// </summary>
+        private static void ConsumeComment(State state)
+        {
+            state.Position = state.CurrentLine.Length;
+            return;
+        }
+
+        /// <summary>
+        /// Skips the whitespace in the current line, from the current position.
+        /// </summary>
+        private static void ConsumeWhitespaceAndComments(State state)
+        {
+            int idx = state.Position;
+            for (idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                if (!Parser.IsWhitespace(state.CurrentLine[idx]))
+                {
+                    state.Position = idx;
+                    break;
+                }
+            }
+
+            for ( ; idx < state.CurrentLine.Length; ++idx)
+            {
+                if (state.CurrentLine[idx] == Parser.Tokens.Comment)
+                {
+                    state.Position = state.CurrentLine.Length;
+                    return;
+                }
+
+                break;
+            }
+
+            state.Position = idx;
+            return;
+        }
+
+        /// <summary>
+        /// Attempts to consume the name of the key.
+        /// </summary>
+        private static void ConsumeKeyName(State state)
+        {
+            int endBracketIdx = state.CurrentLine.IndexOf(Parser.Tokens.KeyEnd, state.Position);
+            if (endBracketIdx == -1)
+            {
+                throw state.CreateError(state.CurrentLine.Length, Parser.Errors.UnexpectedNewLineInKeyName);
+            }
+
+            if (endBracketIdx - state.Position <= 1)
+            {
+                throw state.CreateError(Parser.Errors.KeyNameIsEmpty);
+            }
+
+            string keyName = state.CurrentLine.Substring(state.Position, endBracketIdx - state.Position).Trim();
+            state.CurrentGroupName = keyName;
+
+            state.Position = endBracketIdx + 1;
+            state.Mode = Mode.Scanning;
+            return;
+        }
+
+        /// <summary>
+        /// Attempts to consume the value name, up to the equals.
+        /// </summary>
+        private static void ConsumeValueName(State state)
+        {
+            int nameEnd = -1;
+
+            ConsumeWhitespace(state);
+            int nameStart = state.Position;
+            bool skipNext = false;
+
+            for (int idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                char curChar = state.CurrentLine[idx];
+                if (IsWhitespace(curChar))
+                {
+                    nameEnd = idx;
+                    break;
+                }
+
+                if (curChar == Parser.Tokens.ValueSeparator)
+                {
+                    nameEnd = idx;
+                    skipNext = true;
+                    break;
+                }
+
+                if (!IsValidIdentifierChar(curChar))
+                {
+                    throw state.CreateError(idx, Parser.Errors.ExpectingIdentifier);
+                }
+            }
+
+            if (nameEnd == -1)
+            {
+                state.Position = state.CurrentLine.Length;
                 return;
             }
 
+            if (nameEnd - state.Position == 0)
+            {
+                throw state.CreateError(Parser.Errors.IdentifierNameIsEmpty);
+            }
+
+            state.CurrentValueName = state.CurrentLine.Substring(state.Position, nameEnd - state.Position);
+            state.Position = nameEnd + (skipNext ? 1 : 0);
+
+            // see if we can consume the Equals sign to
+            state.Mode = (skipNext) ? Mode.ReadingValue : Mode.SearchingForValueSeparator;
+            ConsumeWhitespace(state);
+
+            if (state.Mode == Mode.SearchingForValueSeparator)
+            {
+                ConsumeValueSeparator(state);
+            }
+
             return;
+        }
+
+        /// <summary>
+        /// Looks for the Equals sign after a value identifier
+        /// </summary>
+        /// <param name="state">The current parser state.</param>
+        private static void ConsumeValueSeparator(State state)
+        {
+            ConsumeWhitespace(state);
+
+            int idx = state.CurrentLine.Length;
+            for (idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                char curChar = state.CurrentLine[idx];
+                if (curChar == Parser.Tokens.Comment)
+                {
+                    ConsumeComment(state);
+                    return;
+                }
+
+                if (curChar != Parser.Tokens.ValueSeparator)
+                {
+                    throw state.CreateError(idx, Parser.Errors.ExpectingAssignmentOperator);
+                }
+
+                state.Position = idx + 1;
+                state.Mode = Mode.ReadingValue;
+                return;
+            }
+
+            state.Position = idx;
+            return;
+        }
+
+        /// <summary>
+        /// Attempts to consume the non-string, non-array value.
+        /// </summary>
+        private static Entry ConsumeValue(State state)
+        {
+            ConsumeWhitespaceAndComments(state);
+
+            string tokenBuilder = string.Empty;
+            int idx = state.CurrentLine.Length;
+
+            for (idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                char curChar = state.CurrentLine[idx];
+
+                if (curChar == Parser.Tokens.ArrayStart)
+                {
+                    state.CreateEntry(Entry.TomlType.Array);
+                    state.Position = idx + 1;
+                    state.Mode = Mode.ReadingValue;
+                    return null;
+                }
+
+                if (curChar == Parser.Tokens.MultiLineQuoteStart)
+                {
+                    tokenBuilder += curChar;
+                    if (tokenBuilder == Parser.Tokens.MultiLineQuoteStartToken)
+                    {
+                        state.Position = idx + 1;
+                        state.Mode = Mode.ReadingMultiLineStringValue;
+                        return null;
+                    }
+
+                    continue;
+                }
+
+                if (tokenBuilder == Parser.Tokens.EmptyStringToken)
+                {
+                    state.CurrentValue = string.Empty;
+                    state.Position = idx;
+                    state.Mode = state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning;
+                    return state.CreateEntry(Entry.TomlType.String);
+                }
+                else if (tokenBuilder != string.Empty)
+                {
+                    state.Position = idx;
+                    state.Mode = Mode.ReadingStringValue;
+                    return null;
+                }
+
+                tokenBuilder = string.Empty;
+                if (IsWhitespace(curChar))
+                {
+                    continue;
+                }
+
+                if (curChar == Parser.Tokens.Comment)
+                {
+                    state.Position = idx + 1;
+                    state.Mode = state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning;
+                    ConsumeComment(state);
+                    return null;
+                }
+
+                if ((char.IsDigit(curChar)) || (curChar == '-'))
+                {
+                    state.Position = idx;
+                    return ConsumeNumber(state);
+                }
+
+                if ((curChar == 't') || (curChar == 'T') ||
+                    (curChar == 'f') || (curChar == 'F'))
+                {
+                    state.Position = idx;
+                    return ConsumeBoolean(state, ((curChar == 't') || (curChar == 'T')));
+                }
+
+                if ((curChar == Parser.Tokens.ArrayEnd) && (state.InArray))
+                {
+                    var array = state.CloseArray();
+                    state.Position = idx + 1;
+                    state.Mode = state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning;
+
+                    return array;
+                }
+
+                throw state.CreateError(idx, Parser.Errors.InvalidValue);
+            }
+
+            state.Position = idx;
+            return null;
+        }
+
+        /// <summary>
+        /// Consumes the characters in the string, until the end of the string, or the end of the line.
+        /// </summary>
+        private static Entry ConsumeString(State state)
+        {
+            bool isEscaping = false;
+            string value = string.Empty;
+            int lastConsumedPos = state.Position;
+
+            for (int idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                char curChar = state.CurrentLine[idx];
+                if (isEscaping)
+                {
+                    isEscaping = false;
+                    value += GetEscapedCharacter(idx, curChar, state);
+                    lastConsumedPos = idx + 1;
+                    continue;
+                }
+
+                if (curChar == Parser.Tokens.EscapeChar)
+                {
+                    isEscaping = true;
+                    value += state.CurrentLine.Substring(lastConsumedPos, idx - lastConsumedPos);
+                    continue;
+                }
+
+                if (curChar == Parser.Tokens.QuoteEnd)
+                {
+                    value += state.CurrentLine.Substring(lastConsumedPos, idx - lastConsumedPos);
+
+                    state.CurrentValue = value;
+                    state.Position = idx + 1;
+                    state.Mode = (state.ArrayDepth > 0) ? Mode.SearchingForArraySeparator : Mode.Scanning;
+
+                    return state.CreateEntry(Entry.TomlType.String);
+                }
+            }
+
+            state.CurrentValue = value;
+            throw state.CreateError(Parser.Errors.UnexpectedNewLineInString);
+        }
+
+        /// <summary>
+        /// Consumes the characters in the multi-line string, until the end of the string.
+        /// </summary>
+        private static Entry ConsumeMultilineString(State state)
+        {
+            bool isEscaping = false;
+            int lastConsumedPos = state.Position;
+            string tokenBuilder = string.Empty;
+
+            for (int idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                char curChar = state.CurrentLine[idx];
+                if (isEscaping)
+                {
+                    isEscaping = false;
+                    if ((curChar == Parser.Tokens.MultiLineQuoteStart) && (idx + 2 < state.CurrentLine.Length))
+                    {
+                        state.CurrentValue += state.CurrentLine.Substring(lastConsumedPos, idx - lastConsumedPos);
+                        state.CurrentValue += Parser.Tokens.MultiLineQuoteStart;
+                        idx += 2;
+                        continue;
+                    }
+                    else
+                    {
+                        state.CurrentValue += GetEscapedCharacter(idx, curChar, state);
+                    }
+
+                    lastConsumedPos = idx + 1;
+                    continue;
+                }
+
+                if (curChar == Parser.Tokens.EscapeChar)
+                {
+                    tokenBuilder = string.Empty;
+                    isEscaping = true;
+                    state.CurrentValue += state.CurrentLine.Substring(lastConsumedPos, idx - lastConsumedPos);
+                    continue;
+                }
+
+                if (curChar == Parser.Tokens.MultiLineQuoteEnd)
+                {
+                    tokenBuilder += curChar;
+                    if (tokenBuilder == Parser.Tokens.MultiLineQuoteEndToken)
+                    {
+                        // we're done
+                        state.CurrentValue += state.CurrentLine.Substring(lastConsumedPos, idx - lastConsumedPos - 2);
+                        lastConsumedPos = idx + 1;
+                        state.Position = lastConsumedPos;
+                        state.Mode = (state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning);
+                        return state.CreateEntry(Entry.TomlType.String);
+                    }
+                }
+                else
+                {
+                    tokenBuilder = string.Empty;
+                }
+            }
+
+            state.CurrentValue += state.CurrentLine.Substring(lastConsumedPos, state.CurrentLine.Length - lastConsumedPos);
+            state.CurrentValue += Environment.NewLine;
+            state.Position = state.CurrentLine.Length;
+            return null;
+        }
+
+        /// <summary>
+        /// Attempts to read a boolean from the state's CurrentLine.
+        /// </summary>
+        private static Entry ConsumeBoolean(State state, bool expectedValue)
+        {
+            if (expectedValue)
+            {
+                if (state.CurrentLine.Length - state.Position < 4)
+                {
+                    throw state.CreateError(Parser.Errors.InvalidValue);
+                }
+
+                if (!state.CurrentLine.Substring(state.Position, 4).Equals("true", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw state.CreateError(Parser.Errors.InvalidValue);
+                }
+
+                state.Mode = state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning;
+                state.CurrentValue = true.ToString();
+                return state.CreateEntry(Entry.TomlType.Boolean);
+            }
+            else if (state.CurrentLine.Length - state.Position < 5)
+            {
+                throw state.CreateError(Parser.Errors.InvalidValue);
+            }
+
+            if (!state.CurrentLine.Substring(state.Position, 5).Equals("false", StringComparison.OrdinalIgnoreCase))
+            {
+                throw state.CreateError(Parser.Errors.InvalidValue);
+            }
+
+            state.Mode = state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning;
+            state.CurrentValue = false.ToString();
+            return state.CreateEntry(Entry.TomlType.Boolean);
+        }
+
+        /// <summary>
+        /// Attempts to read a number from the state's CurrentLine.
+        /// </summary>
+        private static Entry ConsumeNumber(State state)
+        {
+            bool receivedDecimal = false;
+            int dashCount = 0;
+            int digitCount = 0;
+
+            int idx;
+            for (idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                char curChar = state.CurrentLine[idx];
+                if (IsWhitespace(curChar))
+                {
+                    break;
+                }
+
+                if (curChar == Parser.Tokens.Comment)
+                {
+                    throw state.CreateError(idx, Parser.Errors.UnexpectedCommentInValue);
+                }
+
+                if (curChar == Parser.Tokens.Negative)
+                {
+                    if (dashCount == 0)
+                    {
+                        ++dashCount;
+                        if ((digitCount == 4) || (digitCount == 0))
+                        {
+                            continue;
+                        }
+
+                        throw state.CreateError(idx, Parser.Errors.InvalidValue);
+                    }
+                    else if (dashCount == 1)
+                    {
+                        ++dashCount;
+                        if ((digitCount == 5) || (digitCount == 6))
+                        {
+                            continue;
+                        }
+
+                        throw state.CreateError(idx, Parser.Errors.InvalidValue);
+                    }
+                    else if (dashCount == 2)
+                    {
+                        ++dashCount;
+                        if ((digitCount == 6) || (digitCount == 7) || (digitCount == 8))
+                        {
+                            return ConsumeDateTime(state);
+                        }
+                    }
+                    else
+                    {
+                        throw state.CreateError(idx, Parser.Errors.InvalidValue);
+                    }
+                }
+
+                if (curChar == Parser.Tokens.Decimal)
+                {
+                    if (receivedDecimal)
+                    {
+                        throw state.CreateError(idx, Parser.Errors.InvalidValue);
+                    }
+
+                    receivedDecimal = true;
+                }
+
+                if (!char.IsDigit(curChar))
+                {
+                    if ((dashCount == 2) && ((curChar == 'T') || (IsWhitespace(curChar))))
+                    {
+                        return ConsumeDateTime(state);
+                    }
+                    if ((curChar != Parser.Tokens.KeyStart) && (!IsWhitespace(curChar)))
+                    {
+                        if (state.InArray && curChar != Parser.Tokens.ArraySeparator && curChar != Parser.Tokens.ArrayEnd)
+                        {
+                            throw state.CreateError(idx, Parser.Errors.InvalidValue);
+                        }
+
+                        break;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                else
+                {
+                    ++digitCount;
+                }
+            }
+
+            state.CurrentValue = state.CurrentLine.Substring(state.Position, idx - state.Position);
+            if (receivedDecimal)
+            {
+                state.Mode = state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning;
+                state.Position = idx;
+                return state.CreateEntry(Entry.TomlType.Float);
+            }
+
+            if (digitCount > 0)
+            {
+                state.Mode = state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning;
+                state.Position = idx;
+                return state.CreateEntry(Entry.TomlType.Int);
+            }
+
+            throw state.CreateError(idx, Parser.Errors.InvalidValue);
+        }
+
+        /// <summary>
+        /// Attempts to read a DateTime from the state's CurrentLine.
+        /// </summary>
+        private static Entry ConsumeDateTime(State state)
+        {
+            // search for a new line or a [ or a #
+            int idx;
+            for (idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                char curChar = state.CurrentLine[idx];
+                if (curChar == Parser.Tokens.KeyStart)
+                {
+                    --idx;
+                    break;
+                }
+                else if (curChar == Parser.Tokens.Comment)
+                {
+                    --idx;
+                    break;
+                }
+                else if ((curChar != ' ') && (IsWhitespace(curChar)))
+                {
+                    --idx;
+                    break;
+                }
+            }
+
+            state.CurrentValue = state.CurrentLine.Substring(state.Position, idx - state.Position);
+            state.Position = idx;
+
+            DateTime result;
+            if (!DateTime.TryParse(state.CurrentValue, out result))
+            {
+                throw state.CreateError(idx, Parser.Errors.InvalidValue);
+            }
+
+            state.Mode = state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning;
+            return state.CreateEntry(Entry.TomlType.DateTime);
+        }
+
+        /// <summary>
+        /// Looks for the comma after an array value
+        /// </summary>
+        /// <param name="state">The current Parser state.</param>
+        private static void ConsumeArraySeparator(State state)
+        {
+            ConsumeWhitespaceAndComments(state);
+
+            int idx = state.CurrentLine.Length;
+            for (idx = state.Position; idx < state.CurrentLine.Length; )
+            {
+                char curChar = state.CurrentLine[idx];
+                if (curChar == Parser.Tokens.ArrayEnd)
+                {
+                    state.Position = idx;
+                    state.Mode = Mode.ReadingArrayEnd;
+                    return;
+                }
+
+                if (curChar != Parser.Tokens.ArraySeparator)
+                {
+                    throw state.CreateError(idx, Parser.Errors.ExpectingArraySeparator);
+                }
+
+                state.Position = idx + 1;
+                state.Mode = Mode.ReadingValue;
+                return;
+            }
+
+            state.Position = idx;
+            return;
+        }
+
+        /// <summary>
+        /// Attempts to consume the array to the end, or the end of the line.
+        /// </summary>
+        private static Entry ConsumeArrayEnd(State state)
+        {
+            ConsumeWhitespace(state);
+            for (int idx = state.Position; idx < state.CurrentLine.Length; ++idx)
+            {
+                char lineChar = state.CurrentLine[idx];
+
+                if (lineChar == Parser.Tokens.ArrayEnd)
+                {
+                    Array rootArray = state.CloseArray();
+
+                    state.Position = idx + 1;
+                    state.Mode = state.InArray ? Mode.SearchingForArraySeparator : Mode.Scanning;
+                    return rootArray;
+                }
+            }
+
+            return null;
         }
     }
 }

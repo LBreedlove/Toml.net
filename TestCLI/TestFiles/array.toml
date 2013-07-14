@@ -1,0 +1,10 @@
+﻿[clients]
+ports  = [ 8001, 8001, 8002 ]
+random = [ [ ["myserver1", "8080", "93172"] , ["myserver2", "8081", "93173"] ], ["hello", "goodbye"] ]
+data   = [ ["gamma", "delta"], [1, 2] ] # just an update to make sure parsers support it
+
+# Line breaks are OK when inside arrays
+hosts = [
+  "alpha",
+  "omega"
+]

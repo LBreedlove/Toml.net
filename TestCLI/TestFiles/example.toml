@@ -1,20 +1,6 @@
-﻿# This is a TOML document. Boom.
-multi_line_test = "this is the first line" +
-                  " in a multi-line"
-				+ "value"
-
-base_path = ".\\root\\documents\\2013\\test\"\\"
-
-aNewArray = [
-  1,
-  2, # this is ok
-  3
-]
+# This is a TOML document. Boom.
 
 title = "TOML Example"
-
-[clients]
-data = [ ["gamma", "delta"], [1, 2] ] # just an update to make sure parsers support it
 
 [owner]
 name = "Tom Preston-Werner"
@@ -39,11 +25,11 @@ enabled = true
   ip = "10.0.0.2"
   dc = "eqdc10"
 
-[servers.clients]
+[clients]
 data = [ ["gamma", "delta"], [1, 2] ] # just an update to make sure parsers support it
 
-[root.missingKey.finalKey]
-value= "this is the first Line" +
-       " in a multi-line"
-	 + " value"
-value2 = 2013
+# Line breaks are OK when inside arrays
+hosts = [
+  "alpha",
+  "omega"
+]
