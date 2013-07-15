@@ -11,6 +11,8 @@ namespace TestCLI
     {
         static void Main(string[] args)
         {
+            TestSerializer();
+
             var doc = Toml.Document.Create(".\\TestFiles\\TestData.toml");
             Console.WriteLine(doc.ToString());
 
@@ -34,6 +36,35 @@ namespace TestCLI
 
             TestArray();
             TestParser();
+        }
+
+        static void TestSerializer()
+        {
+            TestConfig config = new TestConfig(
+                "127.0.0.1",
+                8080,
+                true
+            );
+
+            config.SetAlternative
+            (
+                new TestConfig("10.10.1.184", 8081, true)
+            );
+
+            config.IPNames = new[]
+            {
+                new[] {"192.168.1.1", "192.168.1.2"},
+                new[] {"dns_root_1", "dns_root_2"}
+            };
+
+            config.SetBackupPorts(new[] { 8082, 8083, 8084 });
+
+            using (var writer = File.CreateText("TestConfig.toml"))
+            {
+                Toml.Serializer.Write<TestConfig>(config, string.Empty, writer);
+            }
+
+            return;
         }
 
         /// <summary>
