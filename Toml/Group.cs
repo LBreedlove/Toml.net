@@ -197,15 +197,13 @@ namespace Toml
                 group = this;
                 return true;
             }
-
-            Group child = _children[keyParts.First()] as Group;
-            if (child == null)
+            Group child;
+            if(_children.TryGetValue(keyParts.First(), out child))
             {
-                group = null;
-                return false;
+                return child.TryGetGroup(keyParts.Skip(1), out group);
             }
-
-            return child.TryGetGroup(keyParts.Skip(1), out group);
+            group = null;
+            return false;
         }
 
         /// <summary>
